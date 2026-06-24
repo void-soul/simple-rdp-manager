@@ -1,0 +1,80 @@
+name: Release 发布构建
+
+# 触发方式：当推送一个以 v 开头的标签（如 v1.0.0、v1.2.1）时，
+# 自动编译 Windows 应用并发布到 GitHub Releases。
+#
+# 使用方法（在本地仓库执行）：
+#   git tag v1.0.0
+#   git push origin v1.0.0
+#
+# 也可以在 GitHub 网页的 Actions 页面手动触发（workflow_dispatch）。
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的版本标签 (例如 v1.0.0)'
+        required: true
+        default: 'v0.0.0-test'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 构建并发布 (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 解析版本标签
+        id: tagname
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 编译发布
+        run: |
+          dotnet publish -c Release -r win-x86 --self-contained false -o publish
+
+      - name: 打包为 ZIP
+        run: |
+          Compress-Archive -Path publish\* -DestinationPath SimpleRdpManager-${{ steps.tagname.outputs.value }}-win-x86.zip
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tagname.outputs.value }}
+          name: 'Simple RDP Manager ${{ steps.tagname.outputs.value }}'
+          body: |
+            Simple RDP Manager 简易宫格RDP管理器 ${{ steps.tagname.outputs.value }}
+
+            ## 使用说明
+
+            1. 下载 `SimpleRdpManager-${{ steps.tagname.outputs.value }}-win-x86.zip`
+            2. 解压到任意目录
+            3. 运行 `SimpleRdpManager.exe`
+
+            ## 系统要求
+
+            - Windows 10 / Windows 11
+            - [.NET Desktop Runtime 10.0](https://dotnet.microsoft.com/download/dotnet/10.0)
+
+            本版本由 GitHub Actions 自动构建发布。
+          draft: false
+          prerelease: false
+          files: |
+            SimpleRdpManager-${{ steps.tagname.outputs.value }}-win-x86.zip
