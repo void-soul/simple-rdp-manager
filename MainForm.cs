@@ -55,10 +55,11 @@ public partial class MainForm : Form
 
     private void OnLoad(object? sender, EventArgs e)
     {
-        // Now the form has a fully-created handle — safe to start RDP connections
+        // Only auto-connect servers that have AutoConnect enabled
         foreach (var kvp in _rdpControls)
         {
-            kvp.Value.ConnectWith(_servers[kvp.Key]);
+            if (_servers[kvp.Key].AutoConnect)
+                kvp.Value.ConnectWith(_servers[kvp.Key]);
         }
         RefreshToolbar();
         ArrangeGrid();
@@ -385,12 +386,12 @@ public partial class MainForm : Form
     {
         if (index < 0 || index >= _servers.Count) return;
         
-        // Disconnect and dispose control
+        // Remove and dispose control
         if (_rdpControls.TryGetValue(index, out var ctrl))
         {
-            ctrl.Disconnect();
-            ctrl.Dispose();
             _rdpControls.Remove(index);
+            _gridPanel.Controls.Remove(ctrl);
+            ctrl.Dispose(); // Dispose() internally handles Disconnect + COM cleanup
         }
         
         _servers.RemoveAt(index);
@@ -513,7 +514,8 @@ public partial class MainForm : Form
             UserName = src.UserName,
             Password = src.Password,
             DesktopScale = src.DesktopScale,
-            ColorDepth = src.ColorDepth
+            ColorDepth = src.ColorDepth,
+            AutoConnect = src.AutoConnect
         };
     }
 
@@ -575,13 +577,14 @@ public class ServerEditDialog : Form
     private TextBox _passBox = null!;
     private ComboBox _scaleBox = null!;
     private ComboBox _colorBox = null!;
+    private CheckBox _autoCb = null!;
     private int _index;
 
     public ServerEditDialog(int index, ServerConfig? existing)
     {
         _index = index;
         Text = existing == null ? "添加远程桌面" : $"编辑 - {existing.Name}";
-        Size = new Size(420, 400);
+        Size = new Size(420, 440);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -594,11 +597,11 @@ public class ServerEditDialog : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(20, 15, 20, 15),
             ColumnCount = 2,
-            RowCount = 9,
+            RowCount = 10,
             ColumnStyles = { new ColumnStyle(SizeType.Absolute, 100), new ColumnStyle(SizeType.Percent, 100) }
         };
         
-        for (int i = 0; i < 9; i++)
+        for (int i = 0; i < 10; i++)
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
 
         int row = 0;
@@ -629,7 +632,20 @@ public class ServerEditDialog : Form
         };
         AddField(layout, ref row, "色彩:", _colorBox);
         
+        // Auto-connect checkbox
+        _autoCb = new CheckBox
+        {
+            Text = "启动时自动连接",
+            Checked = existing?.AutoConnect ?? true,
+            ForeColor = Color.FromArgb(200, 200, 200),
+            Font = new Font("Microsoft YaHei UI", 10f),
+            Dock = DockStyle.Fill,
+            BackColor = Color.FromArgb(45, 45, 48),
+            FlatStyle = FlatStyle.Flat
+        };
+        layout.Controls.Add(_autoCb, 1, row);
         row++;
+        
         layout.RowStyles[row-1] = new RowStyle(SizeType.Absolute, 50);
         
         var btnPanel = new FlowLayoutPanel
@@ -676,7 +692,8 @@ public class ServerEditDialog : Form
             ColorDepth = _colorBox.Text switch 
             { 
                 "24位" => 24, "16位" => 16, "15位" => 15, _ => 32 
-            }
+            },
+            AutoConnect = _autoCb.Checked
         };
         Config.SetPassword(_passBox.Text);
         

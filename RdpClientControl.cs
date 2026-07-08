@@ -433,14 +433,11 @@ public class RdpClientControl : AxHost
         _stateTimer?.Dispose();
         _stateTimer = null;
 
-        try { Disconnect(); } catch { }
+        _isConnected = false;
+        _connectionAttempted = false;
 
-        // Release COM reference
-        if (_ocx is not null)
-        {
-            try { Marshal.ReleaseComObject(_ocx); } catch { }
-            _ocx = null;
-        }
+        // Let AxHost handle COM cleanup — don't touch _ocx ourselves
+        _ocx = null;
 
         try { _statusLabel?.Dispose(); } catch { }
 

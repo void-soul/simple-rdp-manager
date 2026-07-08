@@ -13,6 +13,7 @@ public class ServerConfig
     public string Password { get; set; } = "";
     public int DesktopScale { get; set; } = 100;
     public int ColorDepth { get; set; } = 32;
+    public bool AutoConnect { get; set; } = true;
 
     [JsonIgnore]
     public string DecryptedPassword
