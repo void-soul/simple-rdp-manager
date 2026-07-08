@@ -12,6 +12,7 @@ public partial class MainForm : Form
     private FlowLayoutPanel _toolbar = null!;
     private readonly Dictionary<int, Button> _serverButtons = new();
     private System.Windows.Forms.Timer _stateTimer = null!;
+    private ContextMenuStrip _serverMenu = null!;
     
     // --- Colors ---
     private static readonly Color ToolbarBg = Color.FromArgb(40, 40, 40);
@@ -33,6 +34,7 @@ public partial class MainForm : Form
         KeyPreview = true;
         
         InitializeUI();
+        InitializeContextMenu();
         // Load config now, but defer RDP connections until OnLoad (form handle must be ready)
         _servers = ConfigManager.Load();
         CreateAllRdpControls(); // Creates controls but does not connect yet
@@ -152,7 +154,7 @@ public partial class MainForm : Form
         btn.MouseDown += (s, e) =>
         {
             if (e.Button == MouseButtons.Right)
-                ShowServerSettings(index);
+                ShowServerMenu(index, btn);
         };
         
         _serverButtons[index] = btn;
@@ -315,7 +317,7 @@ public partial class MainForm : Form
             int idx = i;
             ctrl.MouseClicked += (s, btn) =>
             {
-                if (btn == MouseButtons.Right) ShowServerSettings(idx);
+                if (btn == MouseButtons.Right) ShowServerMenu(idx, ctrl);
                 else if (btn == MouseButtons.Left) OnServerControlClick(idx);
             };
             
@@ -349,7 +351,7 @@ public partial class MainForm : Form
             ctrl.MouseClicked += (s, btn) =>
             {
                 int idx = _servers.IndexOf(dlg.Config);
-                if (btn == MouseButtons.Right) ShowServerSettings(idx);
+                if (btn == MouseButtons.Right) ShowServerMenu(idx, ctrl);
                 else if (btn == MouseButtons.Left) OnServerControlClick(idx);
             };
             
@@ -409,6 +411,71 @@ public partial class MainForm : Form
         
         ConfigManager.Save(_servers);
         RefreshToolbar();
+        ArrangeGrid();
+    }
+
+    // --- Context Menu ---
+
+    private int _contextMenuIndex = -1;
+
+    private void InitializeContextMenu()
+    {
+        _serverMenu = new ContextMenuStrip
+        {
+            Renderer = new DarkToolStripRenderer(),
+            BackColor = Color.FromArgb(50, 50, 53),
+            ForeColor = Color.FromArgb(220, 220, 220)
+        };
+
+        var connectItem = new ToolStripMenuItem("重新连接");
+        connectItem.Click += (s, e) => ConnectServer(_contextMenuIndex);
+        _serverMenu.Items.Add(connectItem);
+
+        var disconnectItem = new ToolStripMenuItem("断开连接");
+        disconnectItem.Click += (s, e) => DisconnectServer(_contextMenuIndex);
+        _serverMenu.Items.Add(disconnectItem);
+
+        _serverMenu.Items.Add(new ToolStripSeparator());
+
+        var settingsItem = new ToolStripMenuItem("设置...");
+        settingsItem.Click += (s, e) => ShowServerSettings(_contextMenuIndex);
+        _serverMenu.Items.Add(settingsItem);
+    }
+
+    private void ShowServerMenu(int index, Control source)
+    {
+        if (index < 0 || index >= _servers.Count) return;
+        _contextMenuIndex = index;
+        _serverMenu.Show(source, new Point(0, source.Height));
+    }
+
+    private void DisconnectServer(int index)
+    {
+        if (index < 0 || index >= _servers.Count) return;
+
+        if (_rdpControls.TryGetValue(index, out var ctrl))
+        {
+            ctrl.Disconnect();
+        }
+
+        // Reset zoom if the disconnected server was zoomed
+        if (_zoomedIndex == index)
+            _zoomedIndex = -1;
+
+        UpdateButtonStates();
+        ArrangeGrid();
+    }
+
+    private void ConnectServer(int index)
+    {
+        if (index < 0 || index >= _servers.Count) return;
+
+        if (_rdpControls.TryGetValue(index, out var ctrl))
+        {
+            ctrl.ConnectWith(_servers[index]);
+        }
+
+        UpdateButtonStates();
         ArrangeGrid();
     }
 
@@ -720,5 +787,27 @@ public class DeleteDialog : Form
         btnPanel.Controls.Add(delBtn);
         
         Controls.Add(btnPanel);
+    }
+}
+
+// ── Dark-themed ToolStrip renderer ─────────────────────
+
+public class DarkToolStripRenderer : ToolStripProfessionalRenderer
+{
+    public DarkToolStripRenderer() : base(new DarkColorTable()) { }
+
+    private class DarkColorTable : ProfessionalColorTable
+    {
+        public override Color MenuItemSelected => Color.FromArgb(0, 120, 215);
+        public override Color MenuItemBorder => Color.FromArgb(50, 50, 53);
+        public override Color MenuBorder => Color.FromArgb(60, 60, 63);
+        public override Color ToolStripDropDownBackground => Color.FromArgb(50, 50, 53);
+        public override Color ImageMarginGradientBegin => Color.FromArgb(50, 50, 53);
+        public override Color ImageMarginGradientMiddle => Color.FromArgb(50, 50, 53);
+        public override Color ImageMarginGradientEnd => Color.FromArgb(50, 50, 53);
+        public override Color SeparatorDark => Color.FromArgb(80, 80, 80);
+        public override Color SeparatorLight => Color.FromArgb(80, 80, 80);
+        public override Color MenuItemPressedGradientBegin => Color.FromArgb(0, 100, 180);
+        public override Color MenuItemPressedGradientEnd => Color.FromArgb(0, 100, 180);
     }
 }
