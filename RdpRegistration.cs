@@ -33,7 +33,7 @@ public static class RdpRegistration
                 var type = Type.GetTypeFromCLSID(Guid.Parse(clsid), true);
                 if (type != null)
                 {
-                    Console.WriteLine($"[RdpRegistration] Found: {clsid}");
+                    RdpLogger.Log($"[RdpRegistration] Found: {clsid}");
                     return clsid;
                 }
             }
@@ -59,7 +59,7 @@ public static class RdpRegistration
                 var type = Type.GetTypeFromProgID(progId, true);
                 if (type != null)
                 {
-                    Console.WriteLine($"[RdpRegistration] Found ProgID: {progId} -> {type.GUID}");
+                    RdpLogger.Log($"[RdpRegistration] Found ProgID: {progId} -> {type.GUID}");
                     return type.GUID.ToString("B").ToUpperInvariant();
                 }
             }

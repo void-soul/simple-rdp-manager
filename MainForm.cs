@@ -6,14 +6,14 @@ public partial class MainForm : Form
     private List<ServerConfig> _servers = new();
     private Dictionary<int, RdpClientControl> _rdpControls = new(); // index -> control
     private int _zoomedIndex = -1;
-    
+
     // --- UI Components ---
     private Panel _gridPanel = null!;
     private FlowLayoutPanel _toolbar = null!;
     private readonly Dictionary<int, Button> _serverButtons = new();
     private System.Windows.Forms.Timer _stateTimer = null!;
     private ContextMenuStrip _serverMenu = null!;
-    
+
     // --- Colors ---
     private static readonly Color ToolbarBg = SystemColors.Control;
     private static readonly Color BtnNormal = SystemColors.Control;
@@ -31,13 +31,14 @@ public partial class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(800, 500);
         KeyPreview = true;
-        
+        DoubleBuffered = true;
+
         InitializeUI();
         InitializeContextMenu();
         // Load config now, but defer RDP connections until OnLoad (form handle must be ready)
         _servers = ConfigManager.Load();
         CreateAllRdpControls(); // Creates controls but does not connect yet
-        
+
         // State polling
         _stateTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _stateTimer.Tick += (s, e) =>
@@ -46,7 +47,7 @@ public partial class MainForm : Form
                 ctrl.RefreshConnectionState();
         };
         _stateTimer.Start();
-        
+
         FormClosing += OnFormClosing;
         Resize += (s, e) => ArrangeGrid();
         Load += OnLoad;
@@ -70,30 +71,31 @@ public partial class MainForm : Form
 
     private void InitializeUI()
     {
+        double scale = DeviceDpi / 96.0;
         // Toolbar
         _toolbar = new FlowLayoutPanel
         {
             Dock = DockStyle.Top,
-            Height = 48,
+            Height = (int)(56 * scale),
             BackColor = ToolbarBg,
-            Padding = new Padding(6, 6, 6, 6),
+            Padding = new Padding((int)(6 * scale), (int)(6 * scale), (int)(6 * scale), (int)(6 * scale)),
             AutoScroll = false,
             WrapContents = false
         };
-        
+
         var addBtn = CreateToolButton("+ 添加", BtnAdd);
         addBtn.Click += (s, e) => ShowAddDialog();
         _toolbar.Controls.Add(addBtn);
-        
+
         var delBtn = CreateToolButton("- 删除", BtnDel);
         delBtn.Click += (s, e) => ShowDeleteDialog();
         _toolbar.Controls.Add(delBtn);
-        
+
         // Separator
-        _toolbar.Controls.Add(new Label { Width = 20, Height = 36, BackColor = Color.Transparent });
-        
+        _toolbar.Controls.Add(new Label { Width = (int)(20 * scale), Height = (int)(40 * scale), BackColor = Color.Transparent });
+
         Controls.Add(_toolbar);
-        
+
         // Grid panel
         _gridPanel = new Panel
         {
@@ -104,6 +106,7 @@ public partial class MainForm : Form
 
     private Button CreateToolButton(string text, Color bgColor)
     {
+        double scale = DeviceDpi / 96.0;
         return new Button
         {
             Text = text,
@@ -112,17 +115,18 @@ public partial class MainForm : Form
             BackColor = bgColor,
             ForeColor = Color.White,
             Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Regular),
-            Height = 36,
-            Width = 80,
+            Height = (int)(40 * scale),
+            Width = (int)(90 * scale),
             Cursor = Cursors.Hand,
             TextAlign = ContentAlignment.MiddleCenter,
             UseVisualStyleBackColor = false,
-            Margin = new Padding(2)
+            Margin = new Padding((int)(2 * scale))
         };
     }
 
     private Button CreateServerButton(int index, ServerConfig server)
     {
+        double scale = DeviceDpi / 96.0;
         var btn = new Button
         {
             Text = server.Name,
@@ -131,15 +135,15 @@ public partial class MainForm : Form
             BackColor = BtnNormal,
             ForeColor = BtnText,
             Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Regular),
-            Height = 36,
-            Width = 100,
+            Height = (int)(40 * scale),
+            Width = (int)(110 * scale),
             Cursor = Cursors.Hand,
             TextAlign = ContentAlignment.MiddleCenter,
             UseVisualStyleBackColor = false,
-            Margin = new Padding(2),
+            Margin = new Padding((int)(2 * scale)),
             Tag = index
         };
-        
+
         btn.Click += (s, e) => OnServerButtonClick(index);
         btn.MouseEnter += (s, e) =>
         {
@@ -159,7 +163,7 @@ public partial class MainForm : Form
             if (e.Button == MouseButtons.Right)
                 ShowServerMenu(index, btn);
         };
-        
+
         _serverButtons[index] = btn;
         return btn;
     }
@@ -169,12 +173,12 @@ public partial class MainForm : Form
         // Clear server buttons, keep add/del + separator
         while (_toolbar.Controls.Count > 3)
             _toolbar.Controls.RemoveAt(_toolbar.Controls.Count - 1);
-        
+
         _serverButtons.Clear();
-        
+
         for (int i = 0; i < _servers.Count; i++)
             _toolbar.Controls.Add(CreateServerButton(i, _servers[i]));
-        
+
         UpdateButtonStates();
     }
 
@@ -184,7 +188,7 @@ public partial class MainForm : Form
         {
             if (!_serverButtons.TryGetValue(i, out var btn)) continue;
             var ctrl = _rdpControls.GetValueOrDefault(i);
-            
+
             if (i == _zoomedIndex)
                 btn.BackColor = BtnZoom;
             else if (ctrl?.IsConnected == true)
@@ -207,7 +211,7 @@ public partial class MainForm : Form
             // Zoom this one
             _zoomedIndex = index;
         }
-        
+
         UpdateButtonStates();
         ArrangeGrid();
     }
@@ -217,18 +221,26 @@ public partial class MainForm : Form
     {
         int n = _rdpControls.Count;
         if (n == 0) return;
-        
+
         int pw = _gridPanel.Width;
         int ph = _gridPanel.Height;
         if (pw <= 0 || ph <= 0) return;
-        
-        if (_zoomedIndex >= 0 && _zoomedIndex < _servers.Count && _rdpControls.ContainsKey(_zoomedIndex) && n > 1)
+
+        _gridPanel.SuspendLayout();
+        try
         {
-            ArrangeZoomed(pw, ph);
+            if (_zoomedIndex >= 0 && _zoomedIndex < _servers.Count && _rdpControls.ContainsKey(_zoomedIndex) && n > 1)
+            {
+                ArrangeZoomed(pw, ph);
+            }
+            else
+            {
+                ArrangeNormal(pw, ph);
+            }
         }
-        else
+        finally
         {
-            ArrangeNormal(pw, ph);
+            _gridPanel.ResumeLayout(true);
         }
     }
 
@@ -239,13 +251,13 @@ public partial class MainForm : Form
         int rows = (int)Math.Ceiling((double)n / cols);
         int cw = pw / cols;
         int ch = ph / rows;
-        
+
         int idx = 0;
         foreach (var kvp in _rdpControls.OrderBy(k => k.Key))
         {
             int r = idx / cols;
             int c = idx % cols;
-            
+
             // Last row might have fewer items, expand last item
             int span = 1;
             if (r == rows - 1)
@@ -254,7 +266,7 @@ public partial class MainForm : Form
                 if (remaining < cols && idx == (rows - 1) * cols + remaining - 1)
                     span = cols - remaining + 1;
             }
-            
+
             kvp.Value.SetBounds(c * cw, r * ch, cw * span, ch);
             kvp.Value.UpdateDesktopScale();
             idx++;
@@ -265,22 +277,22 @@ public partial class MainForm : Form
     {
         int n = _rdpControls.Count;
         int nSmall = n - 1;
-        
+
         // Sidebar width for small ones
         int sideW = Math.Max(pw / 4, 200);
         int mainW = pw - sideW - 2;
-        
+
         // Big control
         if (_rdpControls.TryGetValue(_zoomedIndex, out var big))
         {
             big.SetBounds(0, 0, mainW, ph);
             big.UpdateDesktopScale();
         }
-        
+
         // Small controls in sidebar
         int i = 0;
         int smallH = nSmall > 0 ? ph / nSmall : ph;
-        
+
         foreach (var kvp in _rdpControls.OrderBy(k => k.Key))
         {
             if (kvp.Key == _zoomedIndex) continue;
@@ -308,15 +320,15 @@ public partial class MainForm : Form
             ctrl.Dispose();
         }
         _rdpControls.Clear();
-        
+
         // Create new controls (connection deferred — call ConnectWith separately)
         for (int i = 0; i < _servers.Count; i++)
         {
             var ctrl = new RdpClientControl();
-            
+
             // ActiveX BeginInit
             ((System.ComponentModel.ISupportInitialize)ctrl).BeginInit();
-            
+
             ctrl.Visible = true;
             ctrl.ConnectionStateChanged += OnConnectionStateChanged;
             int idx = i;
@@ -325,12 +337,12 @@ public partial class MainForm : Form
                 if (btn == MouseButtons.Right) ShowServerMenu(idx, ctrl);
                 else if (btn == MouseButtons.Left) OnServerControlClick(idx);
             };
-            
+
             _gridPanel.Controls.Add(ctrl);
-            
+
             // ActiveX EndInit
             ((System.ComponentModel.ISupportInitialize)ctrl).EndInit();
-            
+
             _rdpControls[i] = ctrl;
         }
     }
@@ -353,11 +365,11 @@ public partial class MainForm : Form
         {
             _servers.Add(dlg.Config);
             ConfigManager.Save(_servers);
-            
+
             // Create control for new server
             var ctrl = new RdpClientControl();
             ((System.ComponentModel.ISupportInitialize)ctrl).BeginInit();
-            
+
             ctrl.Visible = true;
             ctrl.ConnectionStateChanged += OnConnectionStateChanged;
             ctrl.MouseClicked += (s, btn) =>
@@ -366,14 +378,14 @@ public partial class MainForm : Form
                 if (btn == MouseButtons.Right) ShowServerMenu(idx, ctrl);
                 else if (btn == MouseButtons.Left) OnServerControlClick(idx);
             };
-            
+
             int newIdx = _servers.Count - 1;
             _gridPanel.Controls.Add(ctrl);
             ((System.ComponentModel.ISupportInitialize)ctrl).EndInit();
-            
+
             _rdpControls[newIdx] = ctrl;
             ctrl.ConnectWith(dlg.Config);
-            
+
             RefreshToolbar();
             ArrangeGrid();
         }
@@ -386,7 +398,7 @@ public partial class MainForm : Form
             MessageBox.Show("没有可删除的桌面。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
-        
+
         var names = _servers.Select(s => s.Name).ToArray();
         using var dlg = new DeleteDialog(names);
         if (dlg.ShowDialog(this) == DialogResult.OK && dlg.SelectedIndex >= 0)
@@ -395,10 +407,15 @@ public partial class MainForm : Form
         }
     }
 
+    private void InitializeComponent()
+    {
+
+    }
+
     private void RemoveServer(int index)
     {
         if (index < 0 || index >= _servers.Count) return;
-        
+
         // Remove and dispose control
         if (_rdpControls.TryGetValue(index, out var ctrl))
         {
@@ -406,9 +423,9 @@ public partial class MainForm : Form
             _gridPanel.Controls.Remove(ctrl);
             ctrl.Dispose(); // Dispose() internally handles Disconnect + COM cleanup
         }
-        
+
         _servers.RemoveAt(index);
-        
+
         // Re-map controls (shift indices)
         var newMap = new Dictionary<int, RdpClientControl>();
         foreach (var kvp in _rdpControls.OrderBy(k => k.Key))
@@ -417,12 +434,12 @@ public partial class MainForm : Form
             newMap[newIdx] = kvp.Value;
         }
         _rdpControls = newMap;
-        
+
         if (_zoomedIndex == index)
             _zoomedIndex = -1;
         else if (_zoomedIndex > index)
             _zoomedIndex--;
-        
+
         ConfigManager.Save(_servers);
         RefreshToolbar();
         ArrangeGrid();
@@ -491,7 +508,7 @@ public partial class MainForm : Form
     private void ShowServerSettings(int index)
     {
         if (index < 0 || index >= _servers.Count) return;
-        
+
         var clone = CloneConfig(_servers[index]);
         using var dlg = new ServerEditDialog(index, clone);
         if (dlg.ShowDialog(this) == DialogResult.OK && dlg.Config != null)
@@ -499,14 +516,14 @@ public partial class MainForm : Form
             // Update config
             _servers[index] = dlg.Config;
             ConfigManager.Save(_servers);
-            
+
             // Reconnect with new settings
             if (_rdpControls.TryGetValue(index, out var ctrl))
             {
                 ctrl.Disconnect();
                 ctrl.ConnectWith(_servers[index]);
             }
-            
+
             RefreshToolbar();
             ArrangeGrid();
         }
@@ -592,23 +609,30 @@ public class ServerEditDialog : Form
     {
         _index = index;
         Text = existing == null ? "添加远程桌面" : $"编辑 - {existing.Name}";
-        Size = new Size(420, 440);
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = false;
-        MinimizeBox = false;
-        StartPosition = FormStartPosition.CenterParent;
+        
+        double scale = DeviceDpi / 96.0;
+        
+        this.ClientSize = new Size((int)(400 * scale), (int)(410 * scale));
+        this.FormBorderStyle = FormBorderStyle.FixedDialog;
+        this.MaximizeBox = false;
+        this.MinimizeBox = false;
+        this.StartPosition = FormStartPosition.CenterParent;
+        this.AutoScaleMode = AutoScaleMode.Dpi;
         
         var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            Padding = new Padding(20, 15, 20, 15),
+            Padding = new Padding((int)(20 * scale), (int)(15 * scale), (int)(20 * scale), (int)(15 * scale)),
             ColumnCount = 2,
             RowCount = 10,
-            ColumnStyles = { new ColumnStyle(SizeType.Absolute, 100), new ColumnStyle(SizeType.Percent, 100) }
         };
         
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, (int)(110 * scale)));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        
+        int rowHeight = (int)(36 * scale);
         for (int i = 0; i < 10; i++)
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, rowHeight));
 
         int row = 0;
         AddField(layout, ref row, "名称:", _nameBox = new TextBox { Text = existing?.Name ?? $"Server{_index + 1}" });
@@ -622,11 +646,24 @@ public class ServerEditDialog : Form
         _passBox = new TextBox { Text = existing?.GetPassword() ?? "", UseSystemPasswordChar = true };
         AddField(layout, ref row, "密码:", _passBox);
         
+        int defaultScale = existing?.DesktopScale ?? 0;
+        if (defaultScale <= 0)
+        {
+            defaultScale = DeviceDpi switch
+            {
+                >= 192 => 200,
+                >= 168 => 175,
+                >= 144 => 150,
+                >= 120 => 125,
+                _ => 100
+            };
+        }
+
         _scaleBox = new ComboBox 
         { 
             DropDownStyle = ComboBoxStyle.DropDownList,
             Items = { "100%", "125%", "150%", "175%", "200%" },
-            Text = existing?.DesktopScale > 0 ? $"{existing.DesktopScale}%" : "100%"
+            Text = $"{defaultScale}%"
         };
         AddField(layout, ref row, "缩放:", _scaleBox);
         
@@ -650,13 +687,13 @@ public class ServerEditDialog : Form
         layout.Controls.Add(_autoCb, 1, row);
         row++;
         
-        layout.RowStyles[row-1] = new RowStyle(SizeType.Absolute, 50);
+        layout.RowStyles[row] = new RowStyle(SizeType.Absolute, (int)(50 * scale));
         
         var btnPanel = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.RightToLeft,
-            Padding = new Padding(0, 8, 0, 0)
+            Padding = new Padding(0, (int)(8 * scale), 0, 0)
         };
         
         var cancelBtn = CreateDialogButton("取消", Color.FromArgb(80, 80, 80));
@@ -665,10 +702,11 @@ public class ServerEditDialog : Form
         
         var saveBtn = CreateDialogButton("保存", Color.FromArgb(0, 120, 215));
         saveBtn.Click += (s, e) => Save();
-        saveBtn.Margin = new Padding(0, 0, 10, 0);
+        saveBtn.Margin = new Padding(0, 0, (int)(10 * scale), 0);
         btnPanel.Controls.Add(saveBtn);
         
-        layout.Controls.Add(btnPanel, 1, row - 1);
+        layout.Controls.Add(btnPanel, 1, row);
+        row++;
         
         Controls.Add(layout);
         AcceptButton = saveBtn;
@@ -725,13 +763,14 @@ public class ServerEditDialog : Form
 
     private Button CreateDialogButton(string text, Color bg)
     {
+        double scale = DeviceDpi / 96.0;
         return new Button
         {
             Text = text,
             BackColor = bg,
             ForeColor = Color.White,
             Font = new Font("Microsoft YaHei UI", 10f),
-            Size = new Size(80, 32),
+            Size = new Size((int)(80 * scale), (int)(32 * scale)),
             Cursor = Cursors.Hand,
             UseVisualStyleBackColor = false,
             FlatStyle = FlatStyle.Flat
@@ -746,11 +785,13 @@ public class DeleteDialog : Form
     public DeleteDialog(string[] names)
     {
         Text = "选择要删除的桌面";
-        Size = new Size(300, 200);
+        double scale = DeviceDpi / 96.0;
+        this.ClientSize = new Size((int)(280 * scale), (int)(180 * scale));
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
         StartPosition = FormStartPosition.CenterParent;
+        AutoScaleMode = AutoScaleMode.Dpi;
         
         var listBox = new ListBox
         {
@@ -764,15 +805,15 @@ public class DeleteDialog : Form
         var btnPanel = new FlowLayoutPanel
         {
             Dock = DockStyle.Bottom,
-            Height = 48,
+            Height = (int)(48 * scale),
             FlowDirection = FlowDirection.RightToLeft,
-            Padding = new Padding(10, 8, 10, 0)
+            Padding = new Padding((int)(10 * scale), (int)(8 * scale), (int)(10 * scale), 0)
         };
         
         var cancelBtn = new Button
         {
             Text = "取消",
-            Size = new Size(70, 32), Cursor = Cursors.Hand
+            Size = new Size((int)(70 * scale), (int)(32 * scale)), Cursor = Cursors.Hand
         };
         cancelBtn.Click += (s, e) => { SelectedIndex = -1; DialogResult = DialogResult.Cancel; Close(); };
         btnPanel.Controls.Add(cancelBtn);
@@ -783,9 +824,9 @@ public class DeleteDialog : Form
             BackColor = Color.FromArgb(200, 50, 50),
             ForeColor = Color.White,
             FlatStyle = FlatStyle.Flat,
-            Size = new Size(70, 32), Cursor = Cursors.Hand,
+            Size = new Size((int)(70 * scale), (int)(32 * scale)), Cursor = Cursors.Hand,
             UseVisualStyleBackColor = false,
-            Margin = new Padding(0, 0, 10, 0)
+            Margin = new Padding(0, 0, (int)(10 * scale), 0)
         };
         delBtn.Click += (s, e) =>
         {
@@ -802,4 +843,3 @@ public class DeleteDialog : Form
         Controls.Add(btnPanel);
     }
 }
-

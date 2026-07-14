@@ -5,7 +5,7 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Update="RdpClientControl.cs">
-      <SubType>Component</SubType>
+      <SubType>UserControl</SubType>
     </Compile>
   </ItemGroup>
 </Project>
