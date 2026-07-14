@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace SimpleRdpManager;
 
@@ -10,7 +12,7 @@ namespace SimpleRdpManager;
 /// </summary>
 public class RdpClientControl : AxHost
 {
-    // MsRdpClient10 CLSID — confirmed working on this system via CoCreateInstance
+    // MsRdpClient10 CLSID — Safe for Scripting variant
     private const string RdpClsid = "{C0EFA91A-EEB7-41C7-97FA-F0ED645EFB24}";
 
     private dynamic? _ocx;
@@ -22,6 +24,7 @@ public class RdpClientControl : AxHost
     private System.Windows.Forms.Timer? _stateTimer;
     private System.Windows.Forms.Timer? _resizeTimer;
     private bool _connectionAttempted;
+    private DateTime _connectedAt;
     private int _reconnectWidth;
     private int _reconnectHeight;
     private int _lastReconnectWidth;
@@ -32,11 +35,10 @@ public class RdpClientControl : AxHost
     private const int MinDesktopHeight = 600;
 
     // Color constants
-    private static readonly Color BgColor = Color.FromArgb(20, 20, 20);
-    private static readonly Color StatusBg = Color.FromArgb(30, 30, 30);
-    private static readonly Color StatusFg = Color.FromArgb(200, 200, 50);
-    private static readonly Color StatusBgError = Color.FromArgb(60, 20, 20);
-    private static readonly Color StatusFgError = Color.FromArgb(255, 100, 100);
+    private static readonly Color StatusBg = SystemColors.Control;
+    private static readonly Color StatusFg = SystemColors.ControlText;
+    private static readonly Color StatusBgError = Color.FromArgb(255, 230, 230);
+    private static readonly Color StatusFgError = Color.FromArgb(180, 0, 0);
 
     public event Action<RdpClientControl>? ConnectionStateChanged;
     public event Action<RdpClientControl, MouseButtons>? MouseClicked;
@@ -46,7 +48,6 @@ public class RdpClientControl : AxHost
 
     public RdpClientControl() : base(RdpClsid)
     {
-        BackColor = BgColor;
     }
 
     // ── AxHost lifecycle ────────────────────────────────
@@ -58,11 +59,32 @@ public class RdpClientControl : AxHost
         try
         {
             _ocx = GetOcx();
+            Log("AttachInterfaces: OCX 已绑定");
+            if (_connectionAttempted && _config != null)
+            {
+                Log("检测到待处理的连接，启动 DoConnect");
+                DoConnect();
+            }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[RDP] AttachInterfaces failed: {ex.Message}");
+            Log($"[RDP] AttachInterfaces failed: {ex.Message}");
         }
+    }
+
+    // ── Logging ─────────────────────────────────────────
+
+    private static readonly string LogFile = Path.Combine(AppContext.BaseDirectory, "simple-rdp.log");
+
+    private static void Log(string msg)
+    {
+        try
+        {
+            var line = $"[{DateTime.Now:HH:mm:ss.fff}] {msg}";
+            Debug.WriteLine($"[RDP] {line}");
+            File.AppendAllText(LogFile, line + Environment.NewLine, Encoding.UTF8);
+        }
+        catch { }
     }
 
     // ── Status overlay ──────────────────────────────────
@@ -108,120 +130,228 @@ public class RdpClientControl : AxHost
     {
         _config = config;
         _connectionAttempted = true;
+        Log($"=== ConnectWith 开始: {config.Ip}:{config.Port} user={config.UserName} ===");
         ShowStatus("正在连接...");
 
-        // CRITICAL: CreateControl() triggers handle creation → OCX loading → AttachInterfaces() → _ocx set
-        if (!IsHandleCreated)
+        if (_ocx != null)
+        {
+            Log("OCX已就绪，直接启动 DoConnect");
+            DoConnect();
+        }
+        else
+        {
+            if (IsHandleCreated)
+            {
+                Log("Handle已创建但OCX为空，尝试直接获取 OCX");
+                try
+                {
+                    _ocx = GetOcx();
+                    if (_ocx != null)
+                    {
+                        DoConnect();
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"直接获取 OCX 失败: {ex.Message}");
+                }
+            }
+
+            Log("OCX未就绪，调用 CreateControl() 等待 AttachInterfaces");
             CreateControl();
-
-        // AxHost COM OCX loading is asynchronous — pump messages with timeout (max ~5 seconds)
-        int maxRetries = 250; // 250 * 20ms = 5000ms
-        for (int i = 0; i < maxRetries && _ocx is null; i++)
-        {
-            Application.DoEvents();
-            Thread.Sleep(20);
         }
-
-        if (_ocx is null)
-        {
-            ShowStatus($"RDP控件创建失败 - 系统可能未安装远程桌面ActiveX控件", isError: true);
-            Debug.WriteLine($"[RDP] OCX creation timed out after {maxRetries * 20}ms, CLSID={RdpClsid}");
-            return;
-        }
-
-        // Offload the actual connection to a background thread
-        // (the COM object itself is thread-affine, but property setting is fast)
-        ThreadPool.QueueUserWorkItem(_ => DoConnect());
     }
 
     private void DoConnect()
     {
         if (_config is null || _ocx is null) return;
 
+        var pwd = _config.GetPassword();
+        if (!string.IsNullOrEmpty(pwd))
+        {
+            Log("DoConnect: 启动异步凭据存储及连接...");
+            // Run StoreCredential on ThreadPool so it doesn't block the UI thread
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                StoreCredential();
+                // After credential is stored, perform the connection on the UI thread
+                BeginInvoke(() => DoConnectUI(pwd));
+            });
+        }
+        else
+        {
+            DoConnectUI(null);
+        }
+    }
+
+    private void DoConnectUI(string? pwd)
+    {
+        if (_config is null || _ocx is null || _disposed || IsDisposed) return;
+
         try
         {
             dynamic ocx = _ocx;
 
-            // Initial resolution: use config scale ratio, then UpdateDesktopScale() will
-            // reconnect to exact control size once connected and laid out.
+            int baseW = Width > 0 ? Width : 1280;
+            int baseH = Height > 0 ? Height : 720;
+
             int scale = _config.DesktopScale;
             if (scale < 50) scale = 100;
             if (scale > 300) scale = 300;
-            int desktopW = Math.Max((int)(1280 * scale / 100.0), MinDesktopWidth);
-            int desktopH = Math.Max((int)(720 * scale / 100.0), MinDesktopHeight);
+
+            int desktopW = (int)(baseW * scale / 100.0);
+            int desktopH = (int)(baseH * scale / 100.0);
+
+            // Enforce minimum dimensions while preserving aspect ratio
+            if (desktopW < MinDesktopWidth || desktopH < MinDesktopHeight)
+            {
+                double aspect = (double)baseW / baseH;
+                if (aspect >= 1.33) // Landscape-like
+                {
+                    desktopW = MinDesktopWidth;
+                    desktopH = (int)(MinDesktopWidth / aspect);
+                    if (desktopH < MinDesktopHeight)
+                    {
+                        desktopH = MinDesktopHeight;
+                        desktopW = (int)(MinDesktopHeight * aspect);
+                    }
+                }
+                else
+                {
+                    desktopH = MinDesktopHeight;
+                    desktopW = (int)(MinDesktopHeight * aspect);
+                    if (desktopW < MinDesktopWidth)
+                    {
+                        desktopW = MinDesktopWidth;
+                        desktopH = (int)(MinDesktopWidth / aspect);
+                    }
+                }
+            }
+
+            // Set initial reconnect width/height to avoid immediately reconnecting
+            _lastReconnectWidth = desktopW;
+            _lastReconnectHeight = desktopH;
 
             // ── Step 1: Server & port ──
             ocx.Server = _config.Ip;
+            Log($"Server={_config.Ip}");
 
             // ── Step 2: Desktop size ──
             ocx.DesktopWidth = desktopW;
             ocx.DesktopHeight = desktopH;
+            Log($"Desktop={desktopW}x{desktopH}");
 
             // ── Step 3: User name ──
             if (!string.IsNullOrEmpty(_config.UserName))
+            {
                 ocx.UserName = _config.UserName;
+                Log($"User={_config.UserName}");
+            }
 
-            // ── Step 4: Smart Sizing (auto-scale to fit the container) ──
+            // ── Step 4: Smart Sizing ──
             dynamic adv = ocx.AdvancedSettings9;
             adv.SmartSizing = true;
+            Log("SmartSizing=true");
+            try
+            {
+                adv.EnableCredSspSupport = true;
+                adv.AuthenticationLevel = 2;
+                Log("EnableCredSspSupport=true, AuthenticationLevel=2");
+            }
+            catch (Exception ex)
+            {
+                Log($"设置 CredSSP 属性失败: {ex.Message}");
+            }
 
-            // Port
             if (_config.Port > 0 && _config.Port != 3389)
+            {
                 adv.RDPPort = _config.Port;
+                Log($"RDPPort={_config.Port}");
+            }
 
             // ── Step 5: Password ──
-            // MsRdpClient10 is the "Safe" variant — ClearTextPassword is on the
-            // non-scriptable interface, not the default. We use cmdkey as primary
-            // and the non-scriptable interface as fallback.
-            var pwd = _config.GetPassword();
             if (!string.IsNullOrEmpty(pwd))
             {
-                // Store in Windows Credential Manager (most reliable for Safe variant)
-                StoreCredential();
+                bool pwdSet = false;
 
-                // Also try non-scriptable interface as direct fallback
+                // Method A: Cast to IMsTscNonScriptable (vtable)
                 try
                 {
-                    // The non-scriptable interface is accessible via QueryInterface
-                    // Cast to the correct interface
-                    var nonScriptable = (IMsRdpClientNonScriptable5)ocx;
-                    nonScriptable.ClearTextPassword = pwd;
+                    var nonScriptable = (IMsTscNonScriptable)_ocx;
+                    nonScriptable.put_ClearTextPassword(pwd);
+                    pwdSet = true;
+                    Log("✓ IMsTscNonScriptable.ClearTextPassword (vtable) 设置成功");
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // Fallback: try through AdvancedSettings
-                    try { adv.ClearTextPassword = pwd; } catch { }
+                    Log($"✗ IMsTscNonScriptable.ClearTextPassword (vtable) 失败: {ex.Message}");
+                }
+
+                if (!pwdSet)
+                {
+                    // Method B: InvokeMember on AdvancedSettings (forces DISPATCH_PROPERTYPUT)
+                    try
+                    {
+                        var advObj = (object)ocx.AdvancedSettings;
+                        advObj.GetType().InvokeMember("ClearTextPassword",
+                            BindingFlags.Instance | BindingFlags.PutDispProperty,
+                            null, advObj, new object[] { pwd });
+                        pwdSet = true;
+                        Log("✓ AdvancedSettings.ClearTextPassword (PutDispProperty) 设置成功");
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"✗ PutDispProperty on AdvancedSettings 失败: {ex.Message}");
+
+                        // Fallback: try AdvancedSettings9
+                        try
+                        {
+                            var adv9Obj = (object)adv;
+                            adv9Obj.GetType().InvokeMember("ClearTextPassword",
+                                BindingFlags.Instance | BindingFlags.PutDispProperty,
+                                null, adv9Obj, new object[] { pwd });
+                            pwdSet = true;
+                            Log("✓ AdvancedSettings9.ClearTextPassword (PutDispProperty) 设置成功");
+                        }
+                        catch (Exception ex2)
+                        {
+                            Log($"✗ PutDispProperty on AdvancedSettings9 失败: {ex2.Message}");
+                        }
+                    }
+                }
+
+                // Method C: dynamic fallback
+                if (!pwdSet)
+                {
+                    try { adv.ClearTextPassword = pwd; pwdSet = true; Log("✓ dynamic ClearTextPassword 设置成功"); }
+                    catch { Log("✗ 所有密码设置方法均失败，将仅依赖 cmdkey"); }
                 }
             }
 
             // ── Step 6: Connect! ──
-            BeginInvoke(() =>
-            {
-                try
-                {
-                    ocx.Connect();
-                    StartStatePoller();
-                }
-                catch (Exception ex)
-                {
-                    ShowStatus($"连接启动失败: {ex.Message}", isError: true);
-                }
-            });
+            Log("调用 ocx.Connect()...");
+            ocx.Connect();
+            Log("ocx.Connect() 已返回");
+            StartStatePoller();
         }
         catch (Exception ex)
         {
-            BeginInvoke(() => ShowStatus($"配置失败: {ex.Message}", isError: true));
+            Log($"DoConnectUI 异常: {ex.Message}");
+            ShowStatus($"连接启动失败: {ex.Message}", isError: true);
         }
     }
 
     // ── Connection state polling ────────────────────────
+
+    private int _lastConnectedState = -1;
 
     private void StartStatePoller()
     {
         _stateTimer?.Stop();
         _stateTimer?.Dispose();
 
-        _stateTimer = new System.Windows.Forms.Timer { Interval = 1500 };
+        _stateTimer = new System.Windows.Forms.Timer { Interval = 1000 };
         _stateTimer.Tick += (_, _) =>
         {
             if (_disposed || IsDisposed || _ocx is null)
@@ -233,35 +363,71 @@ public class RdpClientControl : AxHost
             try
             {
                 dynamic ocx = _ocx;
-                int connected = ocx.Connected;       // 0=not connected, 1=connecting, 2=connected
+                
+                int connected = 0;
+                try { connected = Convert.ToInt32(ocx.Connected); } catch { }
 
-                bool nowConnected = connected >= 2;
+                // Log state transitions
+                if (connected != _lastConnectedState)
+                {
+                    Log($"状态变化: {_lastConnectedState} → {connected} ({_config?.Ip})");
+                    
+                    if (connected == 0)
+                    {
+                        string reasonInfo = "N/A";
+                        try
+                        {
+                            var ocxObj = (object)_ocx;
+                            var ocxType = ocxObj.GetType();
+                            
+                            int extCode = -1;
+                            try
+                            {
+                                var res = ocxType.InvokeMember("ExtendedDisconnectReason",
+                                    BindingFlags.GetProperty, null, ocxObj, null);
+                                if (res != null) extCode = (int)res;
+                            }
+                            catch (Exception ex)
+                            {
+                                Log($"读取 ExtendedDisconnectReason 失败: {ex.Message}");
+                            }
+
+                            reasonInfo = $"ExtendedDisconnectReason={extCode}";
+                        }
+                        catch (Exception ex)
+                        {
+                            reasonInfo = $"Error={ex.Message}";
+                        }
+                        Log($"连接失败/断开: connected={connected}, {reasonInfo}, ip={_config?.Ip}");
+                    }
+                    
+                    _lastConnectedState = connected;
+                }
+
+                bool nowConnected = connected == 1;
 
                 if (nowConnected && !_isConnected)
                 {
                     _isConnected = true;
                     _reconnecting = false;
+                    _connectedAt = DateTime.Now;
+                    Log($"连接成功，设置3秒宽限期禁止Reconnect");
                     BeginInvoke(HideStatus);
                     ConnectionStateChanged?.Invoke(this);
                 }
                 else if (!nowConnected && _isConnected && !_reconnecting)
                 {
                     _isConnected = false;
-                    BeginInvoke(() => ShowStatus("已断开"));
+                    Log($"检测到断开: ip={_config?.Ip}");
+                    BeginInvoke(() => ShowStatus("已断开", isError: true));
                     ConnectionStateChanged?.Invoke(this);
                 }
-                else if (!nowConnected && !_isConnected && _connectionAttempted)
+                else if (connected == 2 && !_isConnected && _connectionAttempted)
                 {
-                    string status = connected switch
-                    {
-                        0 => "未连接",
-                        1 => "正在连接...",
-                        _ => "未知状态"
-                    };
                     BeginInvoke(() =>
                     {
                         if (_statusLabel is not null && _statusLabel.Visible)
-                            _statusLabel.Text = status;
+                            _statusLabel.Text = "正在连接...";
                     });
                 }
             }
@@ -294,18 +460,32 @@ public class RdpClientControl : AxHost
             };
             Process.Start(del)?.WaitForExit(3000);
 
-            // Add new
+            // Add new — quote password to handle spaces/special chars
+            var user = _config.UserName;
+            // cmdkey /pass doesn't handle quotes well; use /pass:"..." which works
             var add = new ProcessStartInfo
             {
                 FileName = "cmdkey",
-                Arguments = $"/generic:TERMSRV/{_config.Ip} /user:{_config.UserName} /pass:{pwd}",
+                Arguments = $"/generic:TERMSRV/{_config.Ip} /user:\"{user}\" /pass:\"{pwd}\"",
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
             };
-            Process.Start(add)?.WaitForExit(3000);
+            var proc = Process.Start(add);
+            if (proc != null)
+            {
+                proc.WaitForExit(3000);
+                var stdout = proc.StandardOutput.ReadToEnd().Trim();
+                var stderr = proc.StandardError.ReadToEnd().Trim();
+                Log($"cmdkey 退出码={proc.ExitCode} stdout={stdout} stderr={stderr}");
+            }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Log($"StoreCredential 异常: {ex.Message}");
+        }
     }
 
     // ── Disconnect ──────────────────────────────────────
@@ -323,7 +503,9 @@ public class RdpClientControl : AxHost
             if (_ocx is not null)
             {
                 dynamic ocx = _ocx;
-                if (ocx.Connected > 0)
+                int connected = 0;
+                try { connected = Convert.ToInt32(ocx.Connected); } catch { }
+                if (connected != 0)
                     ocx.Disconnect();
             }
         }
@@ -338,13 +520,44 @@ public class RdpClientControl : AxHost
     {
         if (_disposed || IsDisposed || _ocx is null || !_isConnected) return;
 
-        int w = Math.Max(Width, MinDesktopWidth);
-        int h = Math.Max(Height, MinDesktopHeight);
-        if (w <= 0 || h <= 0) return;
+        int baseW = Width;
+        int baseH = Height;
+        if (baseW <= 0 || baseH <= 0) return;
+
+        int w = baseW;
+        int h = baseH;
+
+        // Enforce minimum dimensions while preserving aspect ratio
+        if (w < MinDesktopWidth || h < MinDesktopHeight)
+        {
+            double aspect = (double)baseW / baseH;
+            if (aspect >= 1.33)
+            {
+                w = MinDesktopWidth;
+                h = (int)(MinDesktopWidth / aspect);
+                if (h < MinDesktopHeight)
+                {
+                    h = MinDesktopHeight;
+                    w = (int)(MinDesktopHeight * aspect);
+                }
+            }
+            else
+            {
+                h = MinDesktopHeight;
+                w = (int)(MinDesktopHeight * aspect);
+                if (w < MinDesktopWidth)
+                {
+                    w = MinDesktopWidth;
+                    h = (int)(MinDesktopWidth / aspect);
+                }
+            }
+        }
 
         // Don't reconnect if size hasn't changed significantly (50px threshold)
         if (Math.Abs(w - _lastReconnectWidth) < 50 && Math.Abs(h - _lastReconnectHeight) < 50)
             return;
+
+        Log($"UpdateDesktopScale: 控件={Width}x{Height} → 目标={w}x{h}, 上次重连={_lastReconnectWidth}x{_lastReconnectHeight}, 将触发Reconnect");
 
         _reconnectWidth = w;
         _reconnectHeight = h;
@@ -362,6 +575,25 @@ public class RdpClientControl : AxHost
     private void OnResizeTimerTick(object? sender, EventArgs e)
     {
         _resizeTimer?.Stop();
+
+        // If we are still in the 3-second grace period, defer the reconnect by restarting the timer!
+        double elapsed = (DateTime.Now - _connectedAt).TotalSeconds;
+        if (elapsed < 3.0)
+        {
+            int delay = (int)((3.0 - elapsed) * 1000) + 100;
+            Log($"还在连接宽限期内({elapsed:F1}s < 3.0s)，延时 {delay}ms 后再次尝试 Reconnect");
+            if (_resizeTimer != null)
+            {
+                _resizeTimer.Interval = Math.Max(delay, 200);
+                _resizeTimer.Start();
+            }
+            return;
+        }
+
+        // Reset interval to default
+        if (_resizeTimer != null)
+            _resizeTimer.Interval = 600;
+
         DoResolutionReconnect();
     }
 
@@ -373,16 +605,41 @@ public class RdpClientControl : AxHost
         int w = _reconnectWidth;
         int h = _reconnectHeight;
 
+        Log($"DoResolutionReconnect: {w}x{h} (ip={_config?.Ip})");
+
         try
         {
             _reconnecting = true;
 
             dynamic ocx = _ocx;
-            int connected = ocx.Connected;
-            if (connected < 2) { _reconnecting = false; return; }
+            int connected = 0;
+            try { connected = Convert.ToInt32(ocx.Connected); } catch { }
+            if (connected != 1) { _reconnecting = false; return; }
 
             Debug.WriteLine($"[RDP] Reconnect to {w}x{h}");
-            ocx.Reconnect((uint)w, (uint)h);
+            try
+            {
+                int scale = _config?.DesktopScale ?? 100;
+                if (scale < 50) scale = 100;
+                if (scale > 300) scale = 300;
+
+                Log($"尝试平滑无缝调整分辨率: {w}x{h} (scale={scale}%)");
+                ocx.UpdateSessionDisplaySettings(
+                    (uint)w,
+                    (uint)h,
+                    (uint)w,
+                    (uint)h,
+                    0, // Orientation: Landscape
+                    (uint)scale,
+                    (uint)scale
+                );
+                Log("平滑分辨率调整成功！");
+            }
+            catch (Exception ex)
+            {
+                Log($"平滑调整分辨率失败({ex.Message})，将回退至 Reconnect 重连方式...");
+                ocx.Reconnect((uint)w, (uint)h);
+            }
 
             _lastReconnectWidth = w;
             _lastReconnectHeight = h;
@@ -446,11 +703,11 @@ public class RdpClientControl : AxHost
 }
 
 // ── COM Interface for non-scriptable password ─────────
-// MsRdpClient10 exposes IMsRdpClientNonScriptable5 via QueryInterface
-[ComImport, Guid("4F1F6ADA-0E89-4C70-A437-5398EB75A3AA")]
-[InterfaceType(ComInterfaceType.InterfaceIsIDispatch)]
-internal interface IMsRdpClientNonScriptable5
+[ComImport]
+[Guid("C1E6743A-41C1-4A74-832A-0DD06C1C7A0E")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IMsTscNonScriptable
 {
-    [DispId(4)] string ClearTextPassword { set; }
-    // Other members omitted — we only need password
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.InternalCall, MethodCodeType = System.Runtime.CompilerServices.MethodCodeType.Runtime)]
+    void put_ClearTextPassword([In, MarshalAs(UnmanagedType.BStr)] string pPassword);
 }

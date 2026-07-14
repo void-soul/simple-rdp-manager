@@ -15,21 +15,20 @@ public partial class MainForm : Form
     private ContextMenuStrip _serverMenu = null!;
     
     // --- Colors ---
-    private static readonly Color ToolbarBg = Color.FromArgb(40, 40, 40);
-    private static readonly Color BtnNormal = Color.FromArgb(60, 60, 60);
-    private static readonly Color BtnHover = Color.FromArgb(80, 80, 80);
+    private static readonly Color ToolbarBg = SystemColors.Control;
+    private static readonly Color BtnNormal = SystemColors.Control;
+    private static readonly Color BtnHover = SystemColors.ControlLight;
     private static readonly Color BtnZoom = Color.FromArgb(0, 120, 215);
     private static readonly Color BtnConnected = Color.FromArgb(0, 160, 80);
-    private static readonly Color BtnText = Color.FromArgb(230, 230, 230);
-    private static readonly Color BtnAdd = Color.FromArgb(70, 130, 70);
-    private static readonly Color BtnDel = Color.FromArgb(180, 60, 60);
+    private static readonly Color BtnText = SystemColors.ControlText;
+    private static readonly Color BtnAdd = Color.FromArgb(0, 140, 0);
+    private static readonly Color BtnDel = Color.FromArgb(200, 50, 50);
 
     public MainForm()
     {
         Text = "简易宫格RDP管理器";
         Size = new Size(1600, 900);
         StartPosition = FormStartPosition.CenterScreen;
-        BackColor = Color.FromArgb(30, 30, 30);
         MinimumSize = new Size(800, 500);
         KeyPreview = true;
         
@@ -53,16 +52,20 @@ public partial class MainForm : Form
         Load += OnLoad;
     }
 
-    private void OnLoad(object? sender, EventArgs e)
+    private async void OnLoad(object? sender, EventArgs e)
     {
-        // Only auto-connect servers that have AutoConnect enabled
+        RefreshToolbar();
+        ArrangeGrid();
+
+        // Auto-connect servers that have AutoConnect enabled, staggered with a short delay
         foreach (var kvp in _rdpControls)
         {
             if (_servers[kvp.Key].AutoConnect)
+            {
                 kvp.Value.ConnectWith(_servers[kvp.Key]);
+                await Task.Delay(300);
+            }
         }
-        RefreshToolbar();
-        ArrangeGrid();
     }
 
     private void InitializeUI()
@@ -94,8 +97,7 @@ public partial class MainForm : Form
         // Grid panel
         _gridPanel = new Panel
         {
-            Dock = DockStyle.Fill,
-            BackColor = Color.FromArgb(20, 20, 20)
+            Dock = DockStyle.Fill
         };
         Controls.Add(_gridPanel);
     }
@@ -106,9 +108,9 @@ public partial class MainForm : Form
         {
             Text = text,
             FlatStyle = FlatStyle.Flat,
-            FlatAppearance = { BorderSize = 0 },
+            FlatAppearance = { BorderSize = 1 },
             BackColor = bgColor,
-            ForeColor = BtnText,
+            ForeColor = Color.White,
             Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Regular),
             Height = 36,
             Width = 80,
@@ -125,7 +127,7 @@ public partial class MainForm : Form
         {
             Text = server.Name,
             FlatStyle = FlatStyle.Flat,
-            FlatAppearance = { BorderSize = 0 },
+            FlatAppearance = { BorderSize = 1, BorderColor = Color.FromArgb(180, 180, 180) },
             BackColor = BtnNormal,
             ForeColor = BtnText,
             Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Regular),
@@ -310,10 +312,12 @@ public partial class MainForm : Form
         // Create new controls (connection deferred — call ConnectWith separately)
         for (int i = 0; i < _servers.Count; i++)
         {
-            var ctrl = new RdpClientControl
-            {
-                Visible = true
-            };
+            var ctrl = new RdpClientControl();
+            
+            // ActiveX BeginInit
+            ((System.ComponentModel.ISupportInitialize)ctrl).BeginInit();
+            
+            ctrl.Visible = true;
             ctrl.ConnectionStateChanged += OnConnectionStateChanged;
             int idx = i;
             ctrl.MouseClicked += (s, btn) =>
@@ -323,6 +327,10 @@ public partial class MainForm : Form
             };
             
             _gridPanel.Controls.Add(ctrl);
+            
+            // ActiveX EndInit
+            ((System.ComponentModel.ISupportInitialize)ctrl).EndInit();
+            
             _rdpControls[i] = ctrl;
         }
     }
@@ -347,7 +355,10 @@ public partial class MainForm : Form
             ConfigManager.Save(_servers);
             
             // Create control for new server
-            var ctrl = new RdpClientControl { Visible = true };
+            var ctrl = new RdpClientControl();
+            ((System.ComponentModel.ISupportInitialize)ctrl).BeginInit();
+            
+            ctrl.Visible = true;
             ctrl.ConnectionStateChanged += OnConnectionStateChanged;
             ctrl.MouseClicked += (s, btn) =>
             {
@@ -358,6 +369,8 @@ public partial class MainForm : Form
             
             int newIdx = _servers.Count - 1;
             _gridPanel.Controls.Add(ctrl);
+            ((System.ComponentModel.ISupportInitialize)ctrl).EndInit();
+            
             _rdpControls[newIdx] = ctrl;
             ctrl.ConnectWith(dlg.Config);
             
@@ -421,12 +434,7 @@ public partial class MainForm : Form
 
     private void InitializeContextMenu()
     {
-        _serverMenu = new ContextMenuStrip
-        {
-            Renderer = new DarkToolStripRenderer(),
-            BackColor = Color.FromArgb(50, 50, 53),
-            ForeColor = Color.FromArgb(220, 220, 220)
-        };
+        _serverMenu = new ContextMenuStrip();
 
         var connectItem = new ToolStripMenuItem("重新连接");
         connectItem.Click += (s, e) => ConnectServer(_contextMenuIndex);
@@ -589,8 +597,6 @@ public class ServerEditDialog : Form
         MaximizeBox = false;
         MinimizeBox = false;
         StartPosition = FormStartPosition.CenterParent;
-        BackColor = Color.FromArgb(45, 45, 48);
-        ForeColor = Color.FromArgb(220, 220, 220);
         
         var layout = new TableLayoutPanel
         {
@@ -637,11 +643,9 @@ public class ServerEditDialog : Form
         {
             Text = "启动时自动连接",
             Checked = existing?.AutoConnect ?? true,
-            ForeColor = Color.FromArgb(200, 200, 200),
             Font = new Font("Microsoft YaHei UI", 10f),
             Dock = DockStyle.Fill,
-            BackColor = Color.FromArgb(45, 45, 48),
-            FlatStyle = FlatStyle.Flat
+            AutoSize = true
         };
         layout.Controls.Add(_autoCb, 1, row);
         row++;
@@ -708,15 +712,12 @@ public class ServerEditDialog : Form
             Text = label,
             TextAlign = ContentAlignment.MiddleRight,
             Dock = DockStyle.Fill,
-            ForeColor = Color.FromArgb(200, 200, 200),
             Font = new Font("Microsoft YaHei UI", 10f)
         };
         layout.Controls.Add(lbl, 0, row);
         
         ctrl.Dock = DockStyle.Fill;
         ctrl.Font = new Font("Microsoft YaHei UI", 10f);
-        ctrl.BackColor = Color.FromArgb(60, 60, 63);
-        ctrl.ForeColor = Color.FromArgb(220, 220, 220);
         layout.Controls.Add(ctrl, 1, row);
         
         row++;
@@ -727,14 +728,13 @@ public class ServerEditDialog : Form
         return new Button
         {
             Text = text,
-            FlatStyle = FlatStyle.Flat,
-            FlatAppearance = { BorderSize = 0 },
             BackColor = bg,
-            ForeColor = Color.FromArgb(230, 230, 230),
+            ForeColor = Color.White,
             Font = new Font("Microsoft YaHei UI", 10f),
             Size = new Size(80, 32),
             Cursor = Cursors.Hand,
-            UseVisualStyleBackColor = false
+            UseVisualStyleBackColor = false,
+            FlatStyle = FlatStyle.Flat
         };
     }
 }
@@ -751,16 +751,11 @@ public class DeleteDialog : Form
         MaximizeBox = false;
         MinimizeBox = false;
         StartPosition = FormStartPosition.CenterParent;
-        BackColor = Color.FromArgb(45, 45, 48);
-        ForeColor = Color.FromArgb(220, 220, 220);
         
         var listBox = new ListBox
         {
             Dock = DockStyle.Fill,
-            BackColor = Color.FromArgb(60, 60, 63),
-            ForeColor = Color.FromArgb(220, 220, 220),
-            Font = new Font("Microsoft YaHei UI", 10f),
-            BorderStyle = BorderStyle.None
+            Font = new Font("Microsoft YaHei UI", 10f)
         };
         listBox.Items.AddRange(names);
         listBox.SelectedIndexChanged += (s, e) => SelectedIndex = listBox.SelectedIndex;
@@ -770,25 +765,26 @@ public class DeleteDialog : Form
         {
             Dock = DockStyle.Bottom,
             Height = 48,
-            BackColor = Color.FromArgb(50, 50, 53),
             FlowDirection = FlowDirection.RightToLeft,
             Padding = new Padding(10, 8, 10, 0)
         };
         
         var cancelBtn = new Button
         {
-            Text = "取消", FlatStyle = FlatStyle.Flat, FlatAppearance = { BorderSize = 0 },
-            BackColor = Color.FromArgb(80, 80, 80), ForeColor = Color.FromArgb(220, 220, 220),
-            Size = new Size(70, 32), Cursor = Cursors.Hand, UseVisualStyleBackColor = false
+            Text = "取消",
+            Size = new Size(70, 32), Cursor = Cursors.Hand
         };
         cancelBtn.Click += (s, e) => { SelectedIndex = -1; DialogResult = DialogResult.Cancel; Close(); };
         btnPanel.Controls.Add(cancelBtn);
         
         var delBtn = new Button
         {
-            Text = "删除", FlatStyle = FlatStyle.Flat, FlatAppearance = { BorderSize = 0 },
-            BackColor = Color.FromArgb(180, 60, 60), ForeColor = Color.FromArgb(230, 230, 230),
-            Size = new Size(70, 32), Cursor = Cursors.Hand, UseVisualStyleBackColor = false,
+            Text = "删除",
+            BackColor = Color.FromArgb(200, 50, 50),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Size = new Size(70, 32), Cursor = Cursors.Hand,
+            UseVisualStyleBackColor = false,
             Margin = new Padding(0, 0, 10, 0)
         };
         delBtn.Click += (s, e) =>
@@ -807,24 +803,3 @@ public class DeleteDialog : Form
     }
 }
 
-// ── Dark-themed ToolStrip renderer ─────────────────────
-
-public class DarkToolStripRenderer : ToolStripProfessionalRenderer
-{
-    public DarkToolStripRenderer() : base(new DarkColorTable()) { }
-
-    private class DarkColorTable : ProfessionalColorTable
-    {
-        public override Color MenuItemSelected => Color.FromArgb(0, 120, 215);
-        public override Color MenuItemBorder => Color.FromArgb(50, 50, 53);
-        public override Color MenuBorder => Color.FromArgb(60, 60, 63);
-        public override Color ToolStripDropDownBackground => Color.FromArgb(50, 50, 53);
-        public override Color ImageMarginGradientBegin => Color.FromArgb(50, 50, 53);
-        public override Color ImageMarginGradientMiddle => Color.FromArgb(50, 50, 53);
-        public override Color ImageMarginGradientEnd => Color.FromArgb(50, 50, 53);
-        public override Color SeparatorDark => Color.FromArgb(80, 80, 80);
-        public override Color SeparatorLight => Color.FromArgb(80, 80, 80);
-        public override Color MenuItemPressedGradientBegin => Color.FromArgb(0, 100, 180);
-        public override Color MenuItemPressedGradientEnd => Color.FromArgb(0, 100, 180);
-    }
-}
